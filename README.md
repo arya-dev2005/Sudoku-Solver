@@ -77,6 +77,28 @@ Includes formatted Sudoku board visualization using a structured console layout.
 
 ---
 
+## Build and Run
+
+### Option 1: Direct g++
+
+```powershell
+g++ -std=c++20 -Wall -Wextra -pedantic main.cpp -o sudoku_solver.exe
+.\sudoku_solver.exe
+```
+
+### Option 2: CMake
+
+```powershell
+cmake -S . -B build
+cmake --build build
+.\build\sudoku_solver.exe
+```
+
+If your generator places the executable under a configuration folder such as
+`build\Debug`, run that generated executable instead.
+
+---
+
 ## Algorithm Overview
 
 ### Constraint Representation

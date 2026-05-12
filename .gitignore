@@ -1,0 +1,15 @@
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.cmake
+
+*.exe
+*.obj
+*.o
+*.ilk
+*.pdb
+
+*_report.txt
+solved_report.txt
+sample_puzzle.txt

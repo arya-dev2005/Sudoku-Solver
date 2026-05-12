@@ -501,6 +501,38 @@ Mask getCandidatesMask(int row,
     return static_cast<Mask>(ALL_DIGITS_MASK & ~usedDigits);
 }
 
+void applyDigitToState(Board& board,
+                       std::array<Mask, 9>& rowMasks,
+                       std::array<Mask, 9>& colMasks,
+                       std::array<Mask, 9>& boxMasks,
+                       int row,
+                       int col,
+                       int digit) {
+    Mask mask = digitMask(digit);
+    int box = getBoxIndex(row, col);
+
+    board[row][col] = digit;
+    rowMasks[row] |= mask;
+    colMasks[col] |= mask;
+    boxMasks[box] |= mask;
+}
+
+void removeDigitFromState(Board& board,
+                          std::array<Mask, 9>& rowMasks,
+                          std::array<Mask, 9>& colMasks,
+                          std::array<Mask, 9>& boxMasks,
+                          int row,
+                          int col,
+                          int digit) {
+    Mask mask = digitMask(digit);
+    int box = getBoxIndex(row, col);
+
+    board[row][col] = EMPTY;
+    rowMasks[row] &= static_cast<Mask>(~mask);
+    colMasks[col] &= static_cast<Mask>(~mask);
+    boxMasks[box] &= static_cast<Mask>(~mask);
+}
+
 void placeDigit(Board& board,
                 std::array<Mask, 9>& rowMasks,
                 std::array<Mask, 9>& colMasks,
@@ -509,13 +541,7 @@ void placeDigit(Board& board,
                 int row,
                 int col,
                 int digit) {
-    Mask mask = digitMask(digit);
-    int box = getBoxIndex(row, col);
-
-    board[row][col] = digit;
-    rowMasks[row] |= mask;
-    colMasks[col] |= mask;
-    boxMasks[box] |= mask;
+    applyDigitToState(board, rowMasks, colMasks, boxMasks, row, col, digit);
     placements.push_back({row, col, digit});
 }
 
@@ -528,14 +554,8 @@ void undoPlacements(Board& board,
     while (placements.size() > checkpoint) {
         Placement placement = placements.back();
         placements.pop_back();
-
-        Mask mask = digitMask(placement.digit);
-        int box = getBoxIndex(placement.row, placement.col);
-
-        board[placement.row][placement.col] = EMPTY;
-        rowMasks[placement.row] &= static_cast<Mask>(~mask);
-        colMasks[placement.col] &= static_cast<Mask>(~mask);
-        boxMasks[box] &= static_cast<Mask>(~mask);
+        removeDigitFromState(board, rowMasks, colMasks, boxMasks,
+                             placement.row, placement.col, placement.digit);
     }
 }
 
@@ -1512,22 +1532,13 @@ bool fillCompleteBoard(Board& board,
     std::shuffle(digits.begin(), digits.end(), rng);
 
     for (int digit : digits) {
-        Mask mask = digitMask(digit);
-        int box = getBoxIndex(choice.row, choice.col);
-
-        board[choice.row][choice.col] = digit;
-        rowMasks[choice.row] |= mask;
-        colMasks[choice.col] |= mask;
-        boxMasks[box] |= mask;
+        applyDigitToState(board, rowMasks, colMasks, boxMasks, choice.row, choice.col, digit);
 
         if (fillCompleteBoard(board, rowMasks, colMasks, boxMasks, rng)) {
             return true;
         }
 
-        board[choice.row][choice.col] = EMPTY;
-        rowMasks[choice.row] &= static_cast<Mask>(~mask);
-        colMasks[choice.col] &= static_cast<Mask>(~mask);
-        boxMasks[box] &= static_cast<Mask>(~mask);
+        removeDigitFromState(board, rowMasks, colMasks, boxMasks, choice.row, choice.col, digit);
     }
 
     return false;
