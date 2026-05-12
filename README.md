@@ -82,7 +82,7 @@ Includes formatted Sudoku board visualization using a structured console layout.
 ### Option 1: Direct g++
 
 ```powershell
-g++ -std=c++20 -Wall -Wextra -pedantic main.cpp -o sudoku_solver.exe
+g++ -std=c++20 -Wall -Wextra -pedantic main.cpp board.cpp solver.cpp ui.cpp generator.cpp benchmark.cpp -o sudoku_solver.exe
 .\sudoku_solver.exe
 ```
 
@@ -138,6 +138,22 @@ The solver works using:
 │   ├── MRV Cell Selection
 │   ├── Recursive Solver
 │   └── Console Rendering
+```
+
+---
+
+## Current Modular Layout
+
+```text
+.
+├── CMakeLists.txt
+├── main.cpp              # menu and application orchestration
+├── board.hpp/.cpp        # board types, parsing, validation, serialization
+├── solver.hpp/.cpp       # backtracking, MRV, propagation, difficulty analysis
+├── generator.hpp/.cpp    # complete-board generation and unique puzzle creation
+├── ui.hpp/.cpp           # ANSI rendering, dashboard, stats display
+├── benchmark.hpp/.cpp    # solver mode comparisons
+└── README.md
 ```
 
 ---
