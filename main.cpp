@@ -1,9 +1,7 @@
-#include "benchmark.hpp"
 #include "board.hpp"
 #include "generator.hpp"
 #include "solver.hpp"
 #include "ui.hpp"
-
 #include <chrono>
 #include <cctype>
 #include <iomanip>
@@ -13,6 +11,8 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+
+void runBenchmark(const Board& puzzle);
 
 void waitForEnter() {
     std::cout << "\nPress Enter to return to the menu...";
