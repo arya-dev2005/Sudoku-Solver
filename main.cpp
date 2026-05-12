@@ -7,6 +7,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1000,18 +1001,173 @@ void showMenu() {
     clearScreen();
     printAppHeader();
     std::cout << "1. Show current puzzle\n";
-    std::cout << "2. Solve instantly\n";
-    std::cout << "3. Visual solve dashboard\n";
-    std::cout << "4. Step-by-step solve\n";
-    std::cout << "5. Benchmark solver modes\n";
-    std::cout << "6. About engine\n";
-    std::cout << "7. Exit\n\n";
+    std::cout << "2. Enter custom puzzle\n";
+    std::cout << "3. Reset to sample puzzle\n";
+    std::cout << "4. Validate current puzzle\n";
+    std::cout << "5. Solve instantly\n";
+    std::cout << "6. Visual solve dashboard\n";
+    std::cout << "7. Step-by-step solve\n";
+    std::cout << "8. Benchmark solver modes\n";
+    std::cout << "9. About engine\n";
+    std::cout << "10. Exit\n\n";
 }
 
 void showCurrentPuzzle(const Board& puzzle) {
     clearScreen();
     printAppHeader();
     std::cout << "Current puzzle:\n";
+    printBoard(puzzle);
+    waitForEnter();
+}
+
+bool parsePuzzleText(const std::string& text, Board& board, std::string& errorMessage) {
+    std::string cells;
+
+    for (char ch : text) {
+        if (std::isdigit(static_cast<unsigned char>(ch)) || ch == '.') {
+            cells.push_back(ch);
+        } else if (!std::isspace(static_cast<unsigned char>(ch))) {
+            errorMessage = "Only digits, '.', and whitespace are allowed.";
+            return false;
+        }
+    }
+
+    if (cells.size() != 81) {
+        errorMessage = "Expected exactly 81 cells, but received " + std::to_string(cells.size()) + ".";
+        return false;
+    }
+
+    Board parsed{};
+    for (std::size_t index = 0; index < cells.size(); ++index) {
+        char ch = cells[index];
+        int row = static_cast<int>(index / SIZE);
+        int col = static_cast<int>(index % SIZE);
+
+        parsed[row][col] = (ch == '.') ? EMPTY : ch - '0';
+    }
+
+    board = parsed;
+    return true;
+}
+
+bool isStructurallyValidPuzzle(const Board& puzzle) {
+    std::array<Mask, 9> rowMasks{};
+    std::array<Mask, 9> colMasks{};
+    std::array<Mask, 9> boxMasks{};
+    return isValidInitialBoard(puzzle, rowMasks, colMasks, boxMasks);
+}
+
+void validateCurrentPuzzle(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    std::cout << "Current puzzle:\n";
+    printBoard(puzzle);
+    std::cout << '\n';
+
+    if (!isStructurallyValidPuzzle(puzzle)) {
+        std::cout << "\nValidation result: invalid board structure.\n";
+        waitForEnter();
+        return;
+    }
+
+    SolverOptions options;
+    options.solutionLimit = 2;
+    SolveReport report = solveSudoku(puzzle, options);
+
+    std::cout << "Validation result: " << statusName(report.status) << '\n';
+    if (report.status == SolveStatus::MultipleSolutions) {
+        std::cout << "This is playable, but not a well-formed Sudoku puzzle because it has more than one solution.\n";
+    }
+
+    waitForEnter();
+}
+
+Board readPuzzleFromUser() {
+    clearScreen();
+    printAppHeader();
+
+    std::cout << "Puzzle input format:\n";
+    std::cout << "- Use digits 1-9 for clues.\n";
+    std::cout << "- Use 0 or . for empty cells.\n";
+    std::cout << "- Spaces are ignored.\n\n";
+
+    std::cout << "1. Enter one 81-character line\n";
+    std::cout << "2. Enter 9 rows\n\n";
+
+    int mode = readIntInRange("Choose input mode: ", 1, 2);
+    std::string text;
+
+    if (mode == 1) {
+        std::cout << "\nEnter puzzle: ";
+        std::getline(std::cin, text);
+    } else {
+        std::cout << "\nEnter 9 rows:\n";
+        for (int row = 0; row < SIZE; ++row) {
+            std::string line;
+            std::cout << "Row " << row + 1 << ": ";
+            std::getline(std::cin, line);
+            text += line;
+            text += '\n';
+        }
+    }
+
+    Board parsed{};
+    std::string errorMessage;
+    if (!parsePuzzleText(text, parsed, errorMessage)) {
+        throw std::runtime_error(errorMessage);
+    }
+
+    return parsed;
+}
+
+void enterCustomPuzzle(Board& puzzle) {
+    try {
+        Board candidate = readPuzzleFromUser();
+
+        clearScreen();
+        printAppHeader();
+        std::cout << "Parsed puzzle:\n";
+        printBoard(candidate);
+        std::cout << '\n';
+
+        if (!isStructurallyValidPuzzle(candidate)) {
+            std::cout << "\nPuzzle was not loaded because it has invalid Sudoku conflicts.\n";
+            waitForEnter();
+            return;
+        }
+
+        SolverOptions options;
+        options.solutionLimit = 2;
+        SolveReport report = solveSudoku(candidate, options);
+
+        if (report.status == SolveStatus::NoSolution || report.status == SolveStatus::Invalid) {
+            std::cout << "Puzzle was not loaded because it has no valid solution.\n";
+            waitForEnter();
+            return;
+        }
+
+        puzzle = candidate;
+        std::cout << "Puzzle loaded successfully: " << statusName(report.status) << ".\n";
+        if (report.status == SolveStatus::MultipleSolutions) {
+            std::cout << "Warning: this puzzle has multiple solutions.\n";
+        }
+    } catch (const std::exception& ex) {
+        clearScreen();
+        printAppHeader();
+        std::cout << "Puzzle input failed: " << ex.what() << '\n';
+    }
+
+    waitForEnter();
+}
+
+Board defaultPuzzle();
+
+void resetToDefaultPuzzle(Board& puzzle) {
+    puzzle = defaultPuzzle();
+    clearScreen();
+    printAppHeader();
+    std::cout << "Puzzle reset to the built-in sample.\n\n";
     printBoard(puzzle);
     waitForEnter();
 }
@@ -1181,28 +1337,37 @@ int main() {
 
     while (true) {
         showMenu();
-        int choice = readIntInRange("Choose an option: ", 1, 7);
+        int choice = readIntInRange("Choose an option: ", 1, 10);
 
         switch (choice) {
             case 1:
                 showCurrentPuzzle(puzzle);
                 break;
             case 2:
-                solveInstantly(puzzle);
+                enterCustomPuzzle(puzzle);
                 break;
             case 3:
-                runVisualSolveFromMenu(puzzle, false);
+                resetToDefaultPuzzle(puzzle);
                 break;
             case 4:
-                runVisualSolveFromMenu(puzzle, true);
+                validateCurrentPuzzle(puzzle);
                 break;
             case 5:
-                benchmarkFromMenu(puzzle);
+                solveInstantly(puzzle);
                 break;
             case 6:
-                showAboutEngine();
+                runVisualSolveFromMenu(puzzle, false);
                 break;
             case 7:
+                runVisualSolveFromMenu(puzzle, true);
+                break;
+            case 8:
+                benchmarkFromMenu(puzzle);
+                break;
+            case 9:
+                showAboutEngine();
+                break;
+            case 10:
                 clearScreen();
                 std::cout << "Goodbye.\n";
                 return 0;
