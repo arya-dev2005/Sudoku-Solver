@@ -81,6 +81,16 @@ struct SolveReport {
     SolverStats stats{};
 };
 
+struct DifficultyAnalysis {
+    Difficulty estimatedDifficulty = Difficulty::Medium;
+    SolveStatus status = SolveStatus::NoSolution;
+    int score = 0;
+    int clues = 0;
+    int blanks = 0;
+    SolverStats propagationStats{};
+    SolverStats searchStats{};
+};
+
 enum class CellEvent {
     None,
     Guess,
@@ -973,6 +983,35 @@ int targetCluesForDifficulty(Difficulty difficulty) {
     return 36;
 }
 
+int difficultyRank(Difficulty difficulty) {
+    switch (difficulty) {
+        case Difficulty::Easy:
+            return 0;
+        case Difficulty::Medium:
+            return 1;
+        case Difficulty::Hard:
+            return 2;
+        case Difficulty::Expert:
+            return 3;
+    }
+
+    return 1;
+}
+
+Difficulty difficultyFromScore(int score) {
+    if (score <= 40) {
+        return Difficulty::Easy;
+    }
+    if (score <= 47) {
+        return Difficulty::Medium;
+    }
+    if (score <= 54) {
+        return Difficulty::Hard;
+    }
+
+    return Difficulty::Expert;
+}
+
 void printStats(const SolverStats& stats) {
     std::cout << "Recursive calls       : " << stats.recursiveCalls << '\n';
     std::cout << "Backtracks            : " << stats.backtracks << '\n';
@@ -1159,6 +1198,60 @@ std::string statsToText(const SolverStats& stats) {
     return out.str();
 }
 
+DifficultyAnalysis analyzeDifficulty(const Board& puzzle) {
+    DifficultyAnalysis analysis;
+    analysis.clues = countFilledCells(puzzle);
+    analysis.blanks = SIZE * SIZE - analysis.clues;
+
+    SolverOptions propagationOptions;
+    propagationOptions.solutionLimit = 2;
+    SolveReport propagationReport = solveSudoku(puzzle, propagationOptions);
+
+    analysis.status = propagationReport.status;
+    analysis.propagationStats = propagationReport.stats;
+
+    if (propagationReport.status != SolveStatus::UniqueSolution) {
+        analysis.estimatedDifficulty = Difficulty::Expert;
+        analysis.score = 100;
+        return analysis;
+    }
+
+    SolverOptions searchOptions;
+    searchOptions.usePropagation = false;
+    searchOptions.solutionLimit = 1;
+    SolveReport searchReport = solveSudoku(puzzle, searchOptions);
+    analysis.searchStats = searchReport.stats;
+
+    int propagationGuessPenalty = propagationReport.stats.maxDepth * 8;
+    int propagationBacktrackPenalty = static_cast<int>(std::min<long long>(40, propagationReport.stats.backtracks * 10));
+    int rawSearchPenalty = static_cast<int>(std::min<long long>(25, searchReport.stats.backtracks / 12));
+    int cluePressure = analysis.blanks;
+
+    analysis.score = cluePressure + propagationGuessPenalty + propagationBacktrackPenalty + rawSearchPenalty;
+    analysis.estimatedDifficulty = difficultyFromScore(analysis.score);
+
+    return analysis;
+}
+
+std::string difficultyAnalysisToText(const DifficultyAnalysis& analysis) {
+    std::ostringstream out;
+
+    out << "Estimated difficulty : " << difficultyName(analysis.estimatedDifficulty) << '\n';
+    out << "Difficulty score     : " << analysis.score << '\n';
+    out << "Clues                : " << analysis.clues << '\n';
+    out << "Empty cells          : " << analysis.blanks << '\n';
+    out << "Status               : " << statusName(analysis.status) << '\n';
+    out << "Propagation depth    : " << analysis.propagationStats.maxDepth << '\n';
+    out << "Propagation backs    : " << analysis.propagationStats.backtracks << '\n';
+    out << "Raw search backs     : " << analysis.searchStats.backtracks << '\n';
+
+    return out.str();
+}
+
+void printDifficultyAnalysis(const DifficultyAnalysis& analysis) {
+    std::cout << difficultyAnalysisToText(analysis);
+}
+
 std::string readTextFile(const std::string& path) {
     std::ifstream input(path);
     if (!input) {
@@ -1203,6 +1296,11 @@ void validateCurrentPuzzle(const Board& puzzle) {
     std::cout << "Validation result: " << statusName(report.status) << '\n';
     if (report.status == SolveStatus::MultipleSolutions) {
         std::cout << "This is playable, but not a well-formed Sudoku puzzle because it has more than one solution.\n";
+    }
+
+    if (report.status == SolveStatus::UniqueSolution) {
+        std::cout << '\n';
+        printDifficultyAnalysis(analyzeDifficulty(puzzle));
     }
 
     waitForEnter();
@@ -1379,6 +1477,8 @@ void saveSolvedReportToFile(const Board& puzzle) {
         out << boardToPrettyText(report.solvedBoard) << '\n';
         out << "Compact solved puzzle:\n";
         out << boardToCompactText(report.solvedBoard) << '\n';
+        out << "Difficulty analysis:\n";
+        out << difficultyAnalysisToText(analyzeDifficulty(puzzle)) << '\n';
         out << "Statistics:\n";
         out << statsToText(report.stats);
 
@@ -1502,6 +1602,65 @@ Board removeCluesPreservingUniqueness(Board solvedBoard,
     return puzzle;
 }
 
+struct GeneratedPuzzle {
+    Board puzzle{};
+    Board solution{};
+    Difficulty requestedDifficulty = Difficulty::Medium;
+    DifficultyAnalysis analysis{};
+    int removedCells = 0;
+    double elapsedMs = 0.0;
+};
+
+int difficultyDistance(Difficulty lhs, Difficulty rhs) {
+    int diff = difficultyRank(lhs) - difficultyRank(rhs);
+    return diff < 0 ? -diff : diff;
+}
+
+GeneratedPuzzle generatePuzzleCandidate(Difficulty difficulty, std::mt19937& rng) {
+    auto start = std::chrono::steady_clock::now();
+
+    Board solvedBoard = generateCompleteBoard(rng);
+    int removedCells = 0;
+    Board generated = removeCluesPreservingUniqueness(solvedBoard, difficulty, rng, removedCells);
+    DifficultyAnalysis analysis = analyzeDifficulty(generated);
+
+    auto stop = std::chrono::steady_clock::now();
+
+    GeneratedPuzzle result;
+    result.puzzle = generated;
+    result.solution = solvedBoard;
+    result.requestedDifficulty = difficulty;
+    result.analysis = analysis;
+    result.removedCells = removedCells;
+    result.elapsedMs = std::chrono::duration<double, std::milli>(stop - start).count();
+    return result;
+}
+
+GeneratedPuzzle generateBestMatchingPuzzle(Difficulty difficulty, std::mt19937& rng, int maxAttempts) {
+    GeneratedPuzzle best;
+    bool hasBest = false;
+
+    for (int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        GeneratedPuzzle candidate = generatePuzzleCandidate(difficulty, rng);
+
+        if (!hasBest ||
+            difficultyDistance(candidate.analysis.estimatedDifficulty, difficulty) <
+                difficultyDistance(best.analysis.estimatedDifficulty, difficulty) ||
+            (difficultyDistance(candidate.analysis.estimatedDifficulty, difficulty) ==
+                 difficultyDistance(best.analysis.estimatedDifficulty, difficulty) &&
+             candidate.analysis.score > best.analysis.score)) {
+            best = candidate;
+            hasBest = true;
+        }
+
+        if (candidate.analysis.estimatedDifficulty == difficulty) {
+            break;
+        }
+    }
+
+    return best;
+}
+
 Difficulty chooseDifficulty() {
     std::cout << "1. Easy   (about 42 clues)\n";
     std::cout << "2. Medium (about 36 clues)\n";
@@ -1534,20 +1693,17 @@ void generatePuzzleFromMenu(Board& puzzle) {
     std::cout << "\nGenerating a " << difficultyName(difficulty) << " puzzle...\n";
     std::cout << "This may take a moment because each removal checks uniqueness.\n\n";
 
-    auto start = std::chrono::steady_clock::now();
-    Board solvedBoard = generateCompleteBoard(rng);
-    int removedCells = 0;
-    Board generated = removeCluesPreservingUniqueness(solvedBoard, difficulty, rng, removedCells);
-    auto stop = std::chrono::steady_clock::now();
+    int attempts = difficulty == Difficulty::Easy ? 2 : 3;
+    GeneratedPuzzle generated = generateBestMatchingPuzzle(difficulty, rng, attempts);
+    puzzle = generated.puzzle;
 
-    puzzle = generated;
-
-    double elapsedMs = std::chrono::duration<double, std::milli>(stop - start).count();
-
-    std::cout << "Generated " << difficultyName(difficulty) << " puzzle.\n";
-    std::cout << "Clues kept     : " << countClues(puzzle) << '\n';
-    std::cout << "Cells removed  : " << removedCells << '\n';
-    std::cout << "Generation time: " << std::fixed << std::setprecision(3) << elapsedMs << " ms\n\n";
+    std::cout << "Requested difficulty : " << difficultyName(difficulty) << '\n';
+    std::cout << "Measured difficulty  : " << difficultyName(generated.analysis.estimatedDifficulty) << '\n';
+    std::cout << "Difficulty score     : " << generated.analysis.score << '\n';
+    std::cout << "Clues kept           : " << countClues(puzzle) << '\n';
+    std::cout << "Cells removed        : " << generated.removedCells << '\n';
+    std::cout << "Generation time      : " << std::fixed << std::setprecision(3)
+              << generated.elapsedMs << " ms\n\n";
 
     printBoard(puzzle);
     waitForEnter();
@@ -1580,6 +1736,12 @@ void solveInstantly(const Board& puzzle) {
         report.status == SolveStatus::MultipleSolutions) {
         std::cout << "Solved board:\n";
         renderBoard(report.solvedBoard, makeFixedCells(puzzle), {}, options);
+        std::cout << '\n';
+    }
+
+    if (report.status == SolveStatus::UniqueSolution) {
+        std::cout << "Difficulty analysis:\n";
+        printDifficultyAnalysis(analyzeDifficulty(puzzle));
         std::cout << '\n';
     }
 
