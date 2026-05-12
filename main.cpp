@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <thread>
 #include <utility>
@@ -942,6 +943,102 @@ void printStats(const SolverStats& stats) {
               << stats.elapsedMs << " ms\n";
 }
 
+void waitForEnter() {
+    std::cout << "\nPress Enter to return to the menu...";
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+}
+
+int readIntInRange(const std::string& prompt, int minValue, int maxValue) {
+    while (true) {
+        std::cout << prompt;
+
+        int value = 0;
+        if (std::cin >> value && value >= minValue && value <= maxValue) {
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+            return value;
+        }
+
+        std::cout << "Please enter a number from " << minValue << " to " << maxValue << ".\n";
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+}
+
+bool readYesNo(const std::string& prompt) {
+    while (true) {
+        std::cout << prompt;
+
+        char answer = '\0';
+        if (std::cin >> answer) {
+            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+
+            answer = static_cast<char>(std::tolower(static_cast<unsigned char>(answer)));
+            if (answer == 'y') {
+                return true;
+            }
+            if (answer == 'n') {
+                return false;
+            }
+        }
+
+        std::cout << "Please enter y or n.\n";
+        std::cin.clear();
+        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+}
+
+void clearScreen() {
+    std::cout << Ansi::CLEAR;
+}
+
+void printAppHeader() {
+    std::cout << colorize("Sudoku Solver Pro\n", Ansi::BOLD, SolverOptions{});
+    std::cout << "Backtracking | Bitmasks | MRV | Propagation | Terminal UI\n\n";
+}
+
+void showMenu() {
+    clearScreen();
+    printAppHeader();
+    std::cout << "1. Show current puzzle\n";
+    std::cout << "2. Solve instantly\n";
+    std::cout << "3. Visual solve dashboard\n";
+    std::cout << "4. Step-by-step solve\n";
+    std::cout << "5. Benchmark solver modes\n";
+    std::cout << "6. About engine\n";
+    std::cout << "7. Exit\n\n";
+}
+
+void showCurrentPuzzle(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+    std::cout << "Current puzzle:\n";
+    printBoard(puzzle);
+    waitForEnter();
+}
+
+void solveInstantly(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    SolverOptions options;
+    options.solutionLimit = 2;
+
+    std::cout << "Solving current puzzle...\n\n";
+    SolveReport report = solveSudoku(puzzle, options);
+
+    std::cout << "Result: " << statusName(report.status) << "\n\n";
+
+    if (report.status == SolveStatus::UniqueSolution ||
+        report.status == SolveStatus::MultipleSolutions) {
+        std::cout << "Solved board:\n";
+        renderBoard(report.solvedBoard, makeFixedCells(puzzle), {}, options);
+        std::cout << '\n';
+    }
+
+    printStats(report.stats);
+    waitForEnter();
+}
+
 void runVisualSolve(const Board& puzzle, int delayMs = 35, bool stepMode = false) {
     SolverOptions visualOptions;
     visualOptions.usePropagation = false; // Shows recursive guessing clearly for learning mode.
@@ -957,6 +1054,34 @@ void runVisualSolve(const Board& puzzle, int delayMs = 35, bool stepMode = false
 
     std::cout << "\nVisual solve finished: " << statusName(report.status) << "\n";
     printStats(report.stats);
+}
+
+void runVisualSolveFromMenu(const Board& puzzle, bool stepMode) {
+    clearScreen();
+    printAppHeader();
+
+    int delayMs = 0;
+    if (!stepMode) {
+        delayMs = readIntInRange("Animation delay in milliseconds (0-500): ", 0, 500);
+    }
+
+    bool usePropagation = readYesNo("Enable propagation during visualization? (y/n): ");
+
+    SolverOptions visualOptions;
+    visualOptions.usePropagation = usePropagation;
+    visualOptions.visualMode = true;
+    visualOptions.dashboardMode = true;
+    visualOptions.stepMode = stepMode;
+    visualOptions.animationDelayMs = delayMs;
+    visualOptions.solutionLimit = 1;
+
+    std::cout << Ansi::HIDE_CURSOR;
+    SolveReport report = solveSudoku(puzzle, visualOptions);
+    std::cout << Ansi::SHOW_CURSOR;
+
+    std::cout << "\nVisual solve finished: " << statusName(report.status) << "\n";
+    printStats(report.stats);
+    waitForEnter();
 }
 
 void runBenchmark(const Board& puzzle) {
@@ -1005,8 +1130,40 @@ void runBenchmark(const Board& puzzle) {
     }
 }
 
-int main() {
-    Board puzzle = {{
+void benchmarkFromMenu(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+    runBenchmark(puzzle);
+    waitForEnter();
+}
+
+void showAboutEngine() {
+    clearScreen();
+    printAppHeader();
+
+    std::cout << "Engine architecture:\n";
+    std::cout << "- Board: std::array based 9x9 grid, empty cells stored as 0.\n";
+    std::cout << "- Constraints: row, column, and box masks track used digits.\n";
+    std::cout << "- Search: recursive DFS backtracking with optional MRV.\n";
+    std::cout << "- Optimization: candidate masks enumerate only legal digits.\n";
+    std::cout << "- Propagation: Naked Singles and Hidden Singles reduce guessing.\n";
+    std::cout << "- Reporting: unique, multiple, invalid, or unsolvable puzzle states.\n\n";
+
+    std::cout << "Backtracking flow:\n";
+    std::cout << "1. Pick an empty cell.\n";
+    std::cout << "2. Generate candidates from bitmasks.\n";
+    std::cout << "3. Place a candidate digit.\n";
+    std::cout << "4. Recurse into the smaller puzzle.\n";
+    std::cout << "5. Roll back if the branch fails.\n\n";
+
+    std::cout << "Phase 3 focus:\n";
+    std::cout << "This menu wraps the solver as an application without changing the core engine.\n";
+
+    waitForEnter();
+}
+
+Board defaultPuzzle() {
+    return {{
         {{5, 3, 0, 0, 7, 0, 0, 0, 0}},
         {{6, 0, 0, 1, 9, 5, 0, 0, 0}},
         {{0, 9, 8, 0, 0, 0, 0, 6, 0}},
@@ -1017,33 +1174,40 @@ int main() {
         {{0, 0, 0, 4, 1, 9, 0, 0, 5}},
         {{0, 0, 0, 0, 8, 0, 0, 7, 9}}
     }};
+}
 
-    std::cout << "Original Sudoku:\n";
-    printBoard(puzzle);
+int main() {
+    Board puzzle = defaultPuzzle();
 
-    SolverOptions options;
-    options.solutionLimit = 2; // Search for a second solution so we can report uniqueness.
+    while (true) {
+        showMenu();
+        int choice = readIntInRange("Choose an option: ", 1, 7);
 
-    SolveReport report = solveSudoku(puzzle, options);
-
-    std::cout << "\nResult: " << statusName(report.status) << "\n\n";
-
-    if (report.status == SolveStatus::UniqueSolution ||
-        report.status == SolveStatus::MultipleSolutions) {
-        std::cout << "Solved Sudoku:\n";
-        printBoard(report.solvedBoard);
-
-        std::cout << "\nColored terminal view:\n";
-        renderBoard(report.solvedBoard, makeFixedCells(puzzle), {}, options);
+        switch (choice) {
+            case 1:
+                showCurrentPuzzle(puzzle);
+                break;
+            case 2:
+                solveInstantly(puzzle);
+                break;
+            case 3:
+                runVisualSolveFromMenu(puzzle, false);
+                break;
+            case 4:
+                runVisualSolveFromMenu(puzzle, true);
+                break;
+            case 5:
+                benchmarkFromMenu(puzzle);
+                break;
+            case 6:
+                showAboutEngine();
+                break;
+            case 7:
+                clearScreen();
+                std::cout << "Goodbye.\n";
+                return 0;
+        }
     }
-
-    std::cout << '\n';
-    printStats(report.stats);
-
-    runBenchmark(puzzle);
-
-    std::cout << "\nVisual mode is available through runVisualSolve(puzzle, delayMs, stepMode).\n";
-    std::cout << "For example, call runVisualSolve(puzzle, 50, false) from main to watch recursion.\n";
 
     return 0;
 }
