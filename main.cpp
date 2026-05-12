@@ -8,6 +8,7 @@
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <random>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -64,6 +65,13 @@ enum class SolveStatus {
     NoSolution,
     UniqueSolution,
     MultipleSolutions
+};
+
+enum class Difficulty {
+    Easy,
+    Medium,
+    Hard,
+    Expert
 };
 
 struct SolveReport {
@@ -935,6 +943,36 @@ std::string statusName(SolveStatus status) {
     return "unknown";
 }
 
+std::string difficultyName(Difficulty difficulty) {
+    switch (difficulty) {
+        case Difficulty::Easy:
+            return "Easy";
+        case Difficulty::Medium:
+            return "Medium";
+        case Difficulty::Hard:
+            return "Hard";
+        case Difficulty::Expert:
+            return "Expert";
+    }
+
+    return "Unknown";
+}
+
+int targetCluesForDifficulty(Difficulty difficulty) {
+    switch (difficulty) {
+        case Difficulty::Easy:
+            return 42;
+        case Difficulty::Medium:
+            return 36;
+        case Difficulty::Hard:
+            return 30;
+        case Difficulty::Expert:
+            return 26;
+    }
+
+    return 36;
+}
+
 void printStats(const SolverStats& stats) {
     std::cout << "Recursive calls       : " << stats.recursiveCalls << '\n';
     std::cout << "Backtracks            : " << stats.backtracks << '\n';
@@ -1007,14 +1045,15 @@ void showMenu() {
     std::cout << "3. Load puzzle from file\n";
     std::cout << "4. Save current puzzle to file\n";
     std::cout << "5. Save solved report to file\n";
-    std::cout << "6. Reset to sample puzzle\n";
-    std::cout << "7. Validate current puzzle\n";
-    std::cout << "8. Solve instantly\n";
-    std::cout << "9. Visual solve dashboard\n";
-    std::cout << "10. Step-by-step solve\n";
-    std::cout << "11. Benchmark solver modes\n";
-    std::cout << "12. About engine\n";
-    std::cout << "13. Exit\n\n";
+    std::cout << "6. Generate new puzzle\n";
+    std::cout << "7. Reset to sample puzzle\n";
+    std::cout << "8. Validate current puzzle\n";
+    std::cout << "9. Solve instantly\n";
+    std::cout << "10. Visual solve dashboard\n";
+    std::cout << "11. Step-by-step solve\n";
+    std::cout << "12. Benchmark solver modes\n";
+    std::cout << "13. About engine\n";
+    std::cout << "14. Exit\n\n";
 }
 
 void showCurrentPuzzle(const Board& puzzle) {
@@ -1352,6 +1391,168 @@ void saveSolvedReportToFile(const Board& puzzle) {
     waitForEnter();
 }
 
+bool fillCompleteBoard(Board& board,
+                       std::array<Mask, 9>& rowMasks,
+                       std::array<Mask, 9>& colMasks,
+                       std::array<Mask, 9>& boxMasks,
+                       std::mt19937& rng) {
+    SolverStats ignoredStats;
+    CellChoice choice = findBestEmptyCell(board, rowMasks, colMasks, boxMasks, ignoredStats);
+    if (choice.row == -1) {
+        return true;
+    }
+
+    std::vector<int> digits;
+    for (Mask candidates = choice.candidatesMask; candidates != 0;) {
+        Mask lowestBit = static_cast<Mask>(candidates & -candidates);
+        digits.push_back(maskToDigit(lowestBit));
+        candidates = static_cast<Mask>(candidates & (candidates - 1));
+    }
+
+    std::shuffle(digits.begin(), digits.end(), rng);
+
+    for (int digit : digits) {
+        Mask mask = digitMask(digit);
+        int box = getBoxIndex(choice.row, choice.col);
+
+        board[choice.row][choice.col] = digit;
+        rowMasks[choice.row] |= mask;
+        colMasks[choice.col] |= mask;
+        boxMasks[box] |= mask;
+
+        if (fillCompleteBoard(board, rowMasks, colMasks, boxMasks, rng)) {
+            return true;
+        }
+
+        board[choice.row][choice.col] = EMPTY;
+        rowMasks[choice.row] &= static_cast<Mask>(~mask);
+        colMasks[choice.col] &= static_cast<Mask>(~mask);
+        boxMasks[box] &= static_cast<Mask>(~mask);
+    }
+
+    return false;
+}
+
+Board generateCompleteBoard(std::mt19937& rng) {
+    Board board{};
+    std::array<Mask, 9> rowMasks{};
+    std::array<Mask, 9> colMasks{};
+    std::array<Mask, 9> boxMasks{};
+
+    if (!fillCompleteBoard(board, rowMasks, colMasks, boxMasks, rng)) {
+        throw std::runtime_error("Failed to generate a complete Sudoku board.");
+    }
+
+    return board;
+}
+
+int countClues(const Board& board) {
+    return countFilledCells(board);
+}
+
+bool hasUniqueSolution(const Board& puzzle) {
+    SolverOptions options;
+    options.solutionLimit = 2;
+    SolveReport report = solveSudoku(puzzle, options);
+    return report.status == SolveStatus::UniqueSolution;
+}
+
+std::vector<int> shuffledCellIndices(std::mt19937& rng) {
+    std::vector<int> indices;
+    indices.reserve(SIZE * SIZE);
+
+    for (int index = 0; index < SIZE * SIZE; ++index) {
+        indices.push_back(index);
+    }
+
+    std::shuffle(indices.begin(), indices.end(), rng);
+    return indices;
+}
+
+Board removeCluesPreservingUniqueness(Board solvedBoard,
+                                      Difficulty difficulty,
+                                      std::mt19937& rng,
+                                      int& removedCells) {
+    Board puzzle = solvedBoard;
+    int targetClues = targetCluesForDifficulty(difficulty);
+    removedCells = 0;
+
+    for (int index : shuffledCellIndices(rng)) {
+        if (countClues(puzzle) <= targetClues) {
+            break;
+        }
+
+        int row = index / SIZE;
+        int col = index % SIZE;
+        int oldValue = puzzle[row][col];
+
+        if (oldValue == EMPTY) {
+            continue;
+        }
+
+        puzzle[row][col] = EMPTY;
+
+        if (hasUniqueSolution(puzzle)) {
+            ++removedCells;
+        } else {
+            puzzle[row][col] = oldValue;
+        }
+    }
+
+    return puzzle;
+}
+
+Difficulty chooseDifficulty() {
+    std::cout << "1. Easy   (about 42 clues)\n";
+    std::cout << "2. Medium (about 36 clues)\n";
+    std::cout << "3. Hard   (about 30 clues)\n";
+    std::cout << "4. Expert (about 26 clues)\n\n";
+
+    int choice = readIntInRange("Choose difficulty: ", 1, 4);
+    switch (choice) {
+        case 1:
+            return Difficulty::Easy;
+        case 2:
+            return Difficulty::Medium;
+        case 3:
+            return Difficulty::Hard;
+        case 4:
+            return Difficulty::Expert;
+    }
+
+    return Difficulty::Medium;
+}
+
+void generatePuzzleFromMenu(Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    Difficulty difficulty = chooseDifficulty();
+    std::random_device device;
+    std::mt19937 rng(device());
+
+    std::cout << "\nGenerating a " << difficultyName(difficulty) << " puzzle...\n";
+    std::cout << "This may take a moment because each removal checks uniqueness.\n\n";
+
+    auto start = std::chrono::steady_clock::now();
+    Board solvedBoard = generateCompleteBoard(rng);
+    int removedCells = 0;
+    Board generated = removeCluesPreservingUniqueness(solvedBoard, difficulty, rng, removedCells);
+    auto stop = std::chrono::steady_clock::now();
+
+    puzzle = generated;
+
+    double elapsedMs = std::chrono::duration<double, std::milli>(stop - start).count();
+
+    std::cout << "Generated " << difficultyName(difficulty) << " puzzle.\n";
+    std::cout << "Clues kept     : " << countClues(puzzle) << '\n';
+    std::cout << "Cells removed  : " << removedCells << '\n';
+    std::cout << "Generation time: " << std::fixed << std::setprecision(3) << elapsedMs << " ms\n\n";
+
+    printBoard(puzzle);
+    waitForEnter();
+}
+
 Board defaultPuzzle();
 
 void resetToDefaultPuzzle(Board& puzzle) {
@@ -1528,7 +1729,7 @@ int main() {
 
     while (true) {
         showMenu();
-        int choice = readIntInRange("Choose an option: ", 1, 13);
+        int choice = readIntInRange("Choose an option: ", 1, 14);
 
         switch (choice) {
             case 1:
@@ -1547,27 +1748,30 @@ int main() {
                 saveSolvedReportToFile(puzzle);
                 break;
             case 6:
-                resetToDefaultPuzzle(puzzle);
+                generatePuzzleFromMenu(puzzle);
                 break;
             case 7:
-                validateCurrentPuzzle(puzzle);
+                resetToDefaultPuzzle(puzzle);
                 break;
             case 8:
-                solveInstantly(puzzle);
+                validateCurrentPuzzle(puzzle);
                 break;
             case 9:
-                runVisualSolveFromMenu(puzzle, false);
+                solveInstantly(puzzle);
                 break;
             case 10:
-                runVisualSolveFromMenu(puzzle, true);
+                runVisualSolveFromMenu(puzzle, false);
                 break;
             case 11:
-                benchmarkFromMenu(puzzle);
+                runVisualSolveFromMenu(puzzle, true);
                 break;
             case 12:
-                showAboutEngine();
+                benchmarkFromMenu(puzzle);
                 break;
             case 13:
+                showAboutEngine();
+                break;
+            case 14:
                 clearScreen();
                 std::cout << "Goodbye.\n";
                 return 0;
