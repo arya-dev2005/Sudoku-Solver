@@ -1,13 +1,17 @@
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 using Board = std::array<std::array<int, 9>, 9>;
+using FixedCells = std::array<std::array<bool, 9>, 9>;
 using Mask = std::uint16_t;
 
 constexpr int SIZE = 9;
@@ -31,6 +35,11 @@ struct SolverOptions {
     bool useMrv = true;
     bool usePropagation = true;
     bool useOptimizedIteration = true;
+    bool visualMode = false;
+    bool stepMode = false;
+    bool clearBetweenFrames = true;
+    bool useColor = true;
+    int animationDelayMs = 35;
     int solutionLimit = 1;
 };
 
@@ -58,6 +67,21 @@ struct SolveReport {
     SolverStats stats{};
 };
 
+enum class CellEvent {
+    None,
+    Guess,
+    Propagation,
+    Rollback,
+    Solution
+};
+
+struct RenderState {
+    int row = -1;
+    int col = -1;
+    CellEvent event = CellEvent::None;
+    std::string message;
+};
+
 int getBoxIndex(int row, int col) {
     return (row / 3) * 3 + (col / 3);
 }
@@ -67,21 +91,26 @@ Mask digitMask(int digit) {
 }
 
 int maskToDigit(Mask mask) {
-    for (int digit = 1; digit <= 9; ++digit) {
-        if (mask & (static_cast<Mask>(1u) << digit)) {
-            return digit;
-        }
-    }
-    return -1;
+    // GCC/Clang intrinsic: returns the index of the least significant set bit.
+    // Example: mask 0b10000 -> 4, which represents digit 4 in our encoding.
+    return __builtin_ctz(static_cast<unsigned int>(mask));
 }
 
 int countBits(Mask mask) {
-    int count = 0;
-    while (mask) {
-        count += mask & 1;
-        mask >>= 1;
+    // GCC/Clang intrinsic: counts how many candidate bits are currently set.
+    return __builtin_popcount(static_cast<unsigned int>(mask));
+}
+
+FixedCells makeFixedCells(const Board& board) {
+    FixedCells fixed{};
+
+    for (int row = 0; row < SIZE; ++row) {
+        for (int col = 0; col < SIZE; ++col) {
+            fixed[row][col] = board[row][col] != EMPTY;
+        }
     }
-    return count;
+
+    return fixed;
 }
 
 void printBoard(const Board& board) {
@@ -100,6 +129,115 @@ void printBoard(const Board& board) {
         if ((row + 1) % 3 == 0) {
             std::cout << "+-------+-------+-------+\n";
         }
+    }
+}
+
+namespace Ansi {
+    constexpr const char* RESET = "\033[0m";
+    constexpr const char* BOLD = "\033[1m";
+    constexpr const char* DIM = "\033[2m";
+    constexpr const char* CYAN = "\033[36m";
+    constexpr const char* GREEN = "\033[32m";
+    constexpr const char* YELLOW = "\033[33m";
+    constexpr const char* RED = "\033[31m";
+    constexpr const char* BLUE = "\033[34m";
+    constexpr const char* CLEAR = "\033[2J\033[H";
+}
+
+std::string colorize(const std::string& text, const char* color, const SolverOptions& options) {
+    if (!options.useColor) {
+        return text;
+    }
+
+    return std::string(color) + text + Ansi::RESET;
+}
+
+std::string styledDigit(int digit,
+                        bool isFixed,
+                        bool isHighlighted,
+                        CellEvent event,
+                        const SolverOptions& options) {
+    std::string text = digit == EMPTY ? "." : std::string(1, static_cast<char>('0' + digit));
+
+    if (isHighlighted && event == CellEvent::Rollback) {
+        return colorize(text, Ansi::RED, options);
+    }
+
+    if (isHighlighted && event == CellEvent::Guess) {
+        return colorize(text, Ansi::YELLOW, options);
+    }
+
+    if (isHighlighted && event == CellEvent::Propagation) {
+        return colorize(text, Ansi::BLUE, options);
+    }
+
+    if (isFixed) {
+        return colorize(text, Ansi::CYAN, options);
+    }
+
+    if (digit != EMPTY) {
+        return colorize(text, Ansi::GREEN, options);
+    }
+
+    return colorize(text, Ansi::DIM, options);
+}
+
+void renderBoard(const Board& board,
+                 const FixedCells& fixedCells,
+                 const RenderState& state,
+                 const SolverOptions& options) {
+    std::cout << "+-------+-------+-------+\n";
+    for (int row = 0; row < SIZE; ++row) {
+        std::cout << "| ";
+        for (int col = 0; col < SIZE; ++col) {
+            bool highlighted = row == state.row && col == state.col;
+            std::cout << styledDigit(board[row][col], fixedCells[row][col],
+                                     highlighted, state.event, options) << ' ';
+
+            if ((col + 1) % 3 == 0) {
+                std::cout << "| ";
+            }
+        }
+        std::cout << '\n';
+
+        if ((row + 1) % 3 == 0) {
+            std::cout << "+-------+-------+-------+\n";
+        }
+    }
+}
+
+void renderSolverFrame(const Board& board,
+                       const FixedCells& fixedCells,
+                       const SolverStats& stats,
+                       const RenderState& state,
+                       const SolverOptions& options,
+                       int depth) {
+    if (!options.visualMode) {
+        return;
+    }
+
+    if (options.clearBetweenFrames) {
+        std::cout << Ansi::CLEAR;
+    }
+
+    std::cout << colorize("Sudoku Solver Visual Mode\n", Ansi::BOLD, options);
+    renderBoard(board, fixedCells, state, options);
+
+    std::cout << "\nEvent: " << state.message << '\n';
+    std::cout << "Depth: " << depth
+              << " | Calls: " << stats.recursiveCalls
+              << " | Backtracks: " << stats.backtracks
+              << " | Naked: " << stats.nakedSingles
+              << " | Hidden: " << stats.hiddenSingles << "\n\n";
+
+    std::cout << colorize("Legend: fixed=cyan, solved=green, guess=yellow, propagation=blue, rollback=red\n",
+                          Ansi::DIM, options);
+
+    if (options.stepMode) {
+        std::cout << "Press Enter for next step...";
+        std::cin.get();
+    } else if (options.animationDelayMs > 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(options.animationDelayMs));
     }
 }
 
@@ -252,7 +390,10 @@ bool applyNakedSingles(Board& board,
                        std::array<Mask, 9>& boxMasks,
                        std::vector<Placement>& placements,
                        SolverStats& stats,
-                       bool& changed) {
+                       bool& changed,
+                       const FixedCells& fixedCells,
+                       const SolverOptions& options,
+                       int depth) {
     for (int row = 0; row < SIZE; ++row) {
         for (int col = 0; col < SIZE; ++col) {
             if (board[row][col] != EMPTY) {
@@ -267,9 +408,14 @@ bool applyNakedSingles(Board& board,
             }
 
             if (count == 1) {
-                placeDigit(board, rowMasks, colMasks, boxMasks, placements, row, col, maskToDigit(candidates));
+                int digit = maskToDigit(candidates);
+                placeDigit(board, rowMasks, colMasks, boxMasks, placements, row, col, digit);
                 ++stats.nakedSingles;
                 changed = true;
+                renderSolverFrame(board, fixedCells, stats,
+                                  {row, col, CellEvent::Propagation,
+                                   "Naked single: placed " + std::to_string(digit)},
+                                  options, depth);
             }
         }
     }
@@ -284,6 +430,9 @@ bool placeHiddenSingleInCell(Board& board,
                              std::vector<Placement>& placements,
                              SolverStats& stats,
                              bool& changed,
+                             const FixedCells& fixedCells,
+                             const SolverOptions& options,
+                             int depth,
                              int row,
                              int col,
                              int digit) {
@@ -299,6 +448,10 @@ bool placeHiddenSingleInCell(Board& board,
     placeDigit(board, rowMasks, colMasks, boxMasks, placements, row, col, digit);
     ++stats.hiddenSingles;
     changed = true;
+    renderSolverFrame(board, fixedCells, stats,
+                      {row, col, CellEvent::Propagation,
+                       "Hidden single: placed " + std::to_string(digit)},
+                      options, depth);
     return true;
 }
 
@@ -309,6 +462,9 @@ bool applyHiddenSinglesToUnit(Board& board,
                               std::vector<Placement>& placements,
                               SolverStats& stats,
                               bool& changed,
+                              const FixedCells& fixedCells,
+                              const SolverOptions& options,
+                              int depth,
                               const std::array<std::pair<int, int>, 9>& cells,
                               Mask unitMask) {
     for (int digit = 1; digit <= 9; ++digit) {
@@ -339,7 +495,8 @@ bool applyHiddenSinglesToUnit(Board& board,
 
         if (possibleCount == 1) {
             if (!placeHiddenSingleInCell(board, rowMasks, colMasks, boxMasks, placements,
-                                         stats, changed, onlyRow, onlyCol, digit)) {
+                                         stats, changed, fixedCells, options, depth,
+                                         onlyRow, onlyCol, digit)) {
                 return false;
             }
         }
@@ -354,14 +511,18 @@ bool applyHiddenSingles(Board& board,
                         std::array<Mask, 9>& boxMasks,
                         std::vector<Placement>& placements,
                         SolverStats& stats,
-                        bool& changed) {
+                        bool& changed,
+                        const FixedCells& fixedCells,
+                        const SolverOptions& options,
+                        int depth) {
     for (int row = 0; row < SIZE; ++row) {
         std::array<std::pair<int, int>, 9> cells{};
         for (int col = 0; col < SIZE; ++col) {
             cells[col] = {row, col};
         }
         if (!applyHiddenSinglesToUnit(board, rowMasks, colMasks, boxMasks, placements,
-                                      stats, changed, cells, rowMasks[row])) {
+                                      stats, changed, fixedCells, options, depth,
+                                      cells, rowMasks[row])) {
             return false;
         }
     }
@@ -372,7 +533,8 @@ bool applyHiddenSingles(Board& board,
             cells[row] = {row, col};
         }
         if (!applyHiddenSinglesToUnit(board, rowMasks, colMasks, boxMasks, placements,
-                                      stats, changed, cells, colMasks[col])) {
+                                      stats, changed, fixedCells, options, depth,
+                                      cells, colMasks[col])) {
             return false;
         }
     }
@@ -390,7 +552,8 @@ bool applyHiddenSingles(Board& board,
         }
 
         if (!applyHiddenSinglesToUnit(board, rowMasks, colMasks, boxMasks, placements,
-                                      stats, changed, cells, boxMasks[box])) {
+                                      stats, changed, fixedCells, options, depth,
+                                      cells, boxMasks[box])) {
             return false;
         }
     }
@@ -403,17 +566,22 @@ bool propagateConstraints(Board& board,
                           std::array<Mask, 9>& colMasks,
                           std::array<Mask, 9>& boxMasks,
                           std::vector<Placement>& placements,
-                          SolverStats& stats) {
+                          SolverStats& stats,
+                          const FixedCells& fixedCells,
+                          const SolverOptions& options,
+                          int depth) {
     bool changed = true;
 
     while (changed) {
         changed = false;
 
-        if (!applyNakedSingles(board, rowMasks, colMasks, boxMasks, placements, stats, changed)) {
+        if (!applyNakedSingles(board, rowMasks, colMasks, boxMasks, placements, stats,
+                               changed, fixedCells, options, depth)) {
             return false;
         }
 
-        if (!applyHiddenSingles(board, rowMasks, colMasks, boxMasks, placements, stats, changed)) {
+        if (!applyHiddenSingles(board, rowMasks, colMasks, boxMasks, placements, stats,
+                                changed, fixedCells, options, depth)) {
             return false;
         }
     }
@@ -429,6 +597,7 @@ int searchSolutions(Board& board,
                     SolverStats& stats,
                     Board& firstSolution,
                     std::vector<Placement>& placements,
+                    const FixedCells& fixedCells,
                     int depth) {
     ++stats.recursiveCalls;
     stats.maxDepth = std::max(stats.maxDepth, depth);
@@ -436,7 +605,8 @@ int searchSolutions(Board& board,
     std::size_t checkpoint = placements.size();
 
     if (options.usePropagation &&
-        !propagateConstraints(board, rowMasks, colMasks, boxMasks, placements, stats)) {
+        !propagateConstraints(board, rowMasks, colMasks, boxMasks, placements, stats,
+                              fixedCells, options, depth)) {
         undoPlacements(board, rowMasks, colMasks, boxMasks, placements, checkpoint);
         ++stats.backtracks;
         return 0;
@@ -448,6 +618,9 @@ int searchSolutions(Board& board,
 
     if (choice.row == -1) {
         firstSolution = board;
+        renderSolverFrame(board, fixedCells, stats,
+                          {-1, -1, CellEvent::Solution, "Solved board found"},
+                          options, depth);
         undoPlacements(board, rowMasks, colMasks, boxMasks, placements, checkpoint);
         return 1;
     }
@@ -467,8 +640,20 @@ int searchSolutions(Board& board,
             std::size_t guessCheckpoint = placements.size();
 
             placeDigit(board, rowMasks, colMasks, boxMasks, placements, choice.row, choice.col, digit);
-            solutions += searchSolutions(board, rowMasks, colMasks, boxMasks, options, stats,
-                                         firstSolution, placements, depth + 1);
+            renderSolverFrame(board, fixedCells, stats,
+                              {choice.row, choice.col, CellEvent::Guess,
+                               "Guess: trying " + std::to_string(digit)},
+                              options, depth);
+            int branchSolutions = searchSolutions(board, rowMasks, colMasks, boxMasks, options, stats,
+                                                  firstSolution, placements, fixedCells, depth + 1);
+            solutions += branchSolutions;
+
+            if (branchSolutions == 0) {
+                renderSolverFrame(board, fixedCells, stats,
+                                  {choice.row, choice.col, CellEvent::Rollback,
+                                   "Rollback: undo " + std::to_string(digit)},
+                                  options, depth);
+            }
             undoPlacements(board, rowMasks, colMasks, boxMasks, placements, guessCheckpoint);
 
             if (solutions >= options.solutionLimit) {
@@ -486,8 +671,20 @@ int searchSolutions(Board& board,
 
             std::size_t guessCheckpoint = placements.size();
             placeDigit(board, rowMasks, colMasks, boxMasks, placements, choice.row, choice.col, digit);
-            solutions += searchSolutions(board, rowMasks, colMasks, boxMasks, options, stats,
-                                         firstSolution, placements, depth + 1);
+            renderSolverFrame(board, fixedCells, stats,
+                              {choice.row, choice.col, CellEvent::Guess,
+                               "Guess: trying " + std::to_string(digit)},
+                              options, depth);
+            int branchSolutions = searchSolutions(board, rowMasks, colMasks, boxMasks, options, stats,
+                                                  firstSolution, placements, fixedCells, depth + 1);
+            solutions += branchSolutions;
+
+            if (branchSolutions == 0) {
+                renderSolverFrame(board, fixedCells, stats,
+                                  {choice.row, choice.col, CellEvent::Rollback,
+                                   "Rollback: undo " + std::to_string(digit)},
+                                  options, depth);
+            }
             undoPlacements(board, rowMasks, colMasks, boxMasks, placements, guessCheckpoint);
 
             if (solutions >= options.solutionLimit) {
@@ -517,10 +714,11 @@ SolveReport solveSudoku(Board board, SolverOptions options = {}) {
         return report;
     }
 
+    FixedCells fixedCells = makeFixedCells(board);
     std::vector<Placement> placements;
     Board firstSolution = board;
     int solutions = searchSolutions(board, rowMasks, colMasks, boxMasks, options,
-                                    report.stats, firstSolution, placements, 0);
+                                    report.stats, firstSolution, placements, fixedCells, 0);
 
     auto stop = std::chrono::steady_clock::now();
     report.stats.elapsedMs = std::chrono::duration<double, std::milli>(stop - start).count();
@@ -564,17 +762,44 @@ void printStats(const SolverStats& stats) {
               << stats.elapsedMs << " ms\n";
 }
 
+void runVisualSolve(const Board& puzzle, int delayMs = 35, bool stepMode = false) {
+    SolverOptions visualOptions;
+    visualOptions.usePropagation = false; // Shows recursive guessing clearly for learning mode.
+    visualOptions.visualMode = true;
+    visualOptions.stepMode = stepMode;
+    visualOptions.animationDelayMs = delayMs;
+    visualOptions.solutionLimit = 1;
+
+    SolveReport report = solveSudoku(puzzle, visualOptions);
+
+    std::cout << "\nVisual solve finished: " << statusName(report.status) << "\n";
+    printStats(report.stats);
+}
+
 void runBenchmark(const Board& puzzle) {
     struct BenchmarkCase {
         std::string name;
         SolverOptions options;
     };
 
+    SolverOptions normalDfs;
+    normalDfs.useMrv = false;
+    normalDfs.usePropagation = false;
+    normalDfs.useOptimizedIteration = false;
+
+    SolverOptions mrvOnly;
+    mrvOnly.usePropagation = false;
+
+    SolverOptions mrvWithPropagation;
+
+    SolverOptions uniquenessCheck;
+    uniquenessCheck.solutionLimit = 2;
+
     std::array<BenchmarkCase, 4> cases{{
-        {"Normal DFS, simple digit loop", {false, false, false, 1}},
-        {"MRV only", {true, false, true, 1}},
-        {"MRV + propagation", {true, true, true, 1}},
-        {"Uniqueness check", {true, true, true, 2}},
+        {"Normal DFS, simple digit loop", normalDfs},
+        {"MRV only", mrvOnly},
+        {"MRV + propagation", mrvWithPropagation},
+        {"Uniqueness check", uniquenessCheck},
     }};
 
     std::cout << "\nBenchmark:\n";
@@ -624,12 +849,18 @@ int main() {
         report.status == SolveStatus::MultipleSolutions) {
         std::cout << "Solved Sudoku:\n";
         printBoard(report.solvedBoard);
+
+        std::cout << "\nColored terminal view:\n";
+        renderBoard(report.solvedBoard, makeFixedCells(puzzle), {}, options);
     }
 
     std::cout << '\n';
     printStats(report.stats);
 
     runBenchmark(puzzle);
+
+    std::cout << "\nVisual mode is available through runVisualSolve(puzzle, delayMs, stepMode).\n";
+    std::cout << "For example, call runVisualSolve(puzzle, 50, false) from main to watch recursion.\n";
 
     return 0;
 }
