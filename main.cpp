@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cctype>
 #include <cstdint>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -1002,14 +1004,17 @@ void showMenu() {
     printAppHeader();
     std::cout << "1. Show current puzzle\n";
     std::cout << "2. Enter custom puzzle\n";
-    std::cout << "3. Reset to sample puzzle\n";
-    std::cout << "4. Validate current puzzle\n";
-    std::cout << "5. Solve instantly\n";
-    std::cout << "6. Visual solve dashboard\n";
-    std::cout << "7. Step-by-step solve\n";
-    std::cout << "8. Benchmark solver modes\n";
-    std::cout << "9. About engine\n";
-    std::cout << "10. Exit\n\n";
+    std::cout << "3. Load puzzle from file\n";
+    std::cout << "4. Save current puzzle to file\n";
+    std::cout << "5. Save solved report to file\n";
+    std::cout << "6. Reset to sample puzzle\n";
+    std::cout << "7. Validate current puzzle\n";
+    std::cout << "8. Solve instantly\n";
+    std::cout << "9. Visual solve dashboard\n";
+    std::cout << "10. Step-by-step solve\n";
+    std::cout << "11. Benchmark solver modes\n";
+    std::cout << "12. About engine\n";
+    std::cout << "13. Exit\n\n";
 }
 
 void showCurrentPuzzle(const Board& puzzle) {
@@ -1018,6 +1023,13 @@ void showCurrentPuzzle(const Board& puzzle) {
     std::cout << "Current puzzle:\n";
     printBoard(puzzle);
     waitForEnter();
+}
+
+std::string readLine(const std::string& prompt) {
+    std::cout << prompt;
+    std::string line;
+    std::getline(std::cin, line);
+    return line;
 }
 
 bool parsePuzzleText(const std::string& text, Board& board, std::string& errorMessage) {
@@ -1055,6 +1067,80 @@ bool isStructurallyValidPuzzle(const Board& puzzle) {
     std::array<Mask, 9> colMasks{};
     std::array<Mask, 9> boxMasks{};
     return isValidInitialBoard(puzzle, rowMasks, colMasks, boxMasks);
+}
+
+std::string boardToCompactText(const Board& board) {
+    std::ostringstream out;
+
+    for (int row = 0; row < SIZE; ++row) {
+        for (int col = 0; col < SIZE; ++col) {
+            out << board[row][col];
+        }
+        out << '\n';
+    }
+
+    return out.str();
+}
+
+std::string boardToPrettyText(const Board& board) {
+    std::ostringstream out;
+
+    out << "+-------+-------+-------+\n";
+    for (int row = 0; row < SIZE; ++row) {
+        out << "| ";
+        for (int col = 0; col < SIZE; ++col) {
+            out << (board[row][col] == EMPTY ? '.' : static_cast<char>('0' + board[row][col])) << ' ';
+
+            if ((col + 1) % 3 == 0) {
+                out << "| ";
+            }
+        }
+        out << '\n';
+
+        if ((row + 1) % 3 == 0) {
+            out << "+-------+-------+-------+\n";
+        }
+    }
+
+    return out.str();
+}
+
+std::string statsToText(const SolverStats& stats) {
+    std::ostringstream out;
+
+    out << "Recursive calls       : " << stats.recursiveCalls << '\n';
+    out << "Backtracks            : " << stats.backtracks << '\n';
+    out << "Max recursion depth   : " << stats.maxDepth << '\n';
+    out << "Naked singles         : " << stats.nakedSingles << '\n';
+    out << "Hidden singles        : " << stats.hiddenSingles << '\n';
+    out << "Candidate eliminations: " << stats.candidateEliminations << '\n';
+    out << "Solve time            : " << std::fixed << std::setprecision(3)
+        << stats.elapsedMs << " ms\n";
+
+    return out.str();
+}
+
+std::string readTextFile(const std::string& path) {
+    std::ifstream input(path);
+    if (!input) {
+        throw std::runtime_error("Could not open file for reading: " + path);
+    }
+
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    return buffer.str();
+}
+
+void writeTextFile(const std::string& path, const std::string& text) {
+    std::ofstream output(path);
+    if (!output) {
+        throw std::runtime_error("Could not open file for writing: " + path);
+    }
+
+    output << text;
+    if (!output) {
+        throw std::runtime_error("Failed while writing file: " + path);
+    }
 }
 
 void validateCurrentPuzzle(const Board& puzzle) {
@@ -1156,6 +1242,111 @@ void enterCustomPuzzle(Board& puzzle) {
         clearScreen();
         printAppHeader();
         std::cout << "Puzzle input failed: " << ex.what() << '\n';
+    }
+
+    waitForEnter();
+}
+
+bool validateCandidateForLoading(const Board& candidate) {
+    if (!isStructurallyValidPuzzle(candidate)) {
+        std::cout << "\nPuzzle was not loaded because it has invalid Sudoku conflicts.\n";
+        return false;
+    }
+
+    SolverOptions options;
+    options.solutionLimit = 2;
+    SolveReport report = solveSudoku(candidate, options);
+
+    if (report.status == SolveStatus::NoSolution || report.status == SolveStatus::Invalid) {
+        std::cout << "Puzzle was not loaded because it has no valid solution.\n";
+        return false;
+    }
+
+    std::cout << "Puzzle accepted: " << statusName(report.status) << ".\n";
+    if (report.status == SolveStatus::MultipleSolutions) {
+        std::cout << "Warning: this puzzle has multiple solutions.\n";
+    }
+
+    return true;
+}
+
+void loadPuzzleFromFile(Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    try {
+        std::string path = readLine("Enter puzzle file path: ");
+        std::string text = readTextFile(path);
+
+        Board candidate{};
+        std::string errorMessage;
+        if (!parsePuzzleText(text, candidate, errorMessage)) {
+            throw std::runtime_error(errorMessage);
+        }
+
+        std::cout << "\nLoaded file contents as puzzle:\n";
+        printBoard(candidate);
+        std::cout << '\n';
+
+        if (validateCandidateForLoading(candidate)) {
+            puzzle = candidate;
+        }
+    } catch (const std::exception& ex) {
+        std::cout << "\nFile load failed: " << ex.what() << '\n';
+    }
+
+    waitForEnter();
+}
+
+void saveCurrentPuzzleToFile(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    try {
+        std::string path = readLine("Save current puzzle to file path: ");
+        writeTextFile(path, boardToCompactText(puzzle));
+        std::cout << "\nCurrent puzzle saved to: " << path << '\n';
+    } catch (const std::exception& ex) {
+        std::cout << "\nSave failed: " << ex.what() << '\n';
+    }
+
+    waitForEnter();
+}
+
+void saveSolvedReportToFile(const Board& puzzle) {
+    clearScreen();
+    printAppHeader();
+
+    try {
+        SolverOptions options;
+        options.solutionLimit = 2;
+        SolveReport report = solveSudoku(puzzle, options);
+
+        if (report.status == SolveStatus::NoSolution || report.status == SolveStatus::Invalid) {
+            std::cout << "Solved report was not saved because the current puzzle is "
+                      << statusName(report.status) << ".\n";
+            waitForEnter();
+            return;
+        }
+
+        std::string path = readLine("Save solved report to file path: ");
+
+        std::ostringstream out;
+        out << "Sudoku Solver Pro Report\n";
+        out << "Status: " << statusName(report.status) << "\n\n";
+        out << "Original puzzle:\n";
+        out << boardToPrettyText(puzzle) << '\n';
+        out << "Solved puzzle:\n";
+        out << boardToPrettyText(report.solvedBoard) << '\n';
+        out << "Compact solved puzzle:\n";
+        out << boardToCompactText(report.solvedBoard) << '\n';
+        out << "Statistics:\n";
+        out << statsToText(report.stats);
+
+        writeTextFile(path, out.str());
+        std::cout << "\nSolved report saved to: " << path << '\n';
+    } catch (const std::exception& ex) {
+        std::cout << "\nSave failed: " << ex.what() << '\n';
     }
 
     waitForEnter();
@@ -1337,7 +1528,7 @@ int main() {
 
     while (true) {
         showMenu();
-        int choice = readIntInRange("Choose an option: ", 1, 10);
+        int choice = readIntInRange("Choose an option: ", 1, 13);
 
         switch (choice) {
             case 1:
@@ -1347,27 +1538,36 @@ int main() {
                 enterCustomPuzzle(puzzle);
                 break;
             case 3:
-                resetToDefaultPuzzle(puzzle);
+                loadPuzzleFromFile(puzzle);
                 break;
             case 4:
-                validateCurrentPuzzle(puzzle);
+                saveCurrentPuzzleToFile(puzzle);
                 break;
             case 5:
-                solveInstantly(puzzle);
+                saveSolvedReportToFile(puzzle);
                 break;
             case 6:
-                runVisualSolveFromMenu(puzzle, false);
+                resetToDefaultPuzzle(puzzle);
                 break;
             case 7:
-                runVisualSolveFromMenu(puzzle, true);
+                validateCurrentPuzzle(puzzle);
                 break;
             case 8:
-                benchmarkFromMenu(puzzle);
+                solveInstantly(puzzle);
                 break;
             case 9:
-                showAboutEngine();
+                runVisualSolveFromMenu(puzzle, false);
                 break;
             case 10:
+                runVisualSolveFromMenu(puzzle, true);
+                break;
+            case 11:
+                benchmarkFromMenu(puzzle);
+                break;
+            case 12:
+                showAboutEngine();
+                break;
+            case 13:
                 clearScreen();
                 std::cout << "Goodbye.\n";
                 return 0;
