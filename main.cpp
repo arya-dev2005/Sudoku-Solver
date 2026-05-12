@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <bit>
 #include <chrono>
+#include <cctype>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -36,6 +37,7 @@ struct SolverOptions {
     bool usePropagation = true;
     bool useOptimizedIteration = true;
     bool visualMode = false;
+    bool dashboardMode = true;
     bool stepMode = false;
     bool clearBetweenFrames = true;
     bool useColor = true;
@@ -142,6 +144,8 @@ namespace Ansi {
     constexpr const char* RED = "\033[31m";
     constexpr const char* BLUE = "\033[34m";
     constexpr const char* CLEAR = "\033[2J\033[H";
+    constexpr const char* HIDE_CURSOR = "\033[?25l";
+    constexpr const char* SHOW_CURSOR = "\033[?25h";
 }
 
 std::string colorize(const std::string& text, const char* color, const SolverOptions& options) {
@@ -206,6 +210,160 @@ void renderBoard(const Board& board,
     }
 }
 
+std::string eventName(CellEvent event) {
+    switch (event) {
+        case CellEvent::Guess:
+            return "guess";
+        case CellEvent::Propagation:
+            return "propagation";
+        case CellEvent::Rollback:
+            return "rollback";
+        case CellEvent::Solution:
+            return "solution";
+        case CellEvent::None:
+            return "idle";
+    }
+
+    return "unknown";
+}
+
+int countFilledCells(const Board& board) {
+    int filled = 0;
+
+    for (const auto& row : board) {
+        for (int value : row) {
+            if (value != EMPTY) {
+                ++filled;
+            }
+        }
+    }
+
+    return filled;
+}
+
+std::size_t visibleLength(const std::string& text) {
+    std::size_t length = 0;
+
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        if (text[i] == '\033' && i + 1 < text.size() && text[i + 1] == '[') {
+            i += 2;
+            while (i < text.size() && !std::isalpha(static_cast<unsigned char>(text[i]))) {
+                ++i;
+            }
+            continue;
+        }
+
+        ++length;
+    }
+
+    return length;
+}
+
+std::string padRight(std::string text, std::size_t width) {
+    std::size_t visible = visibleLength(text);
+    if (visible < width) {
+        text += std::string(width - visible, ' ');
+    }
+
+    return text;
+}
+
+std::vector<std::string> boardLines(const Board& board,
+                                    const FixedCells& fixedCells,
+                                    const RenderState& state,
+                                    const SolverOptions& options) {
+    std::vector<std::string> lines;
+    lines.push_back("+-------+-------+-------+");
+
+    for (int row = 0; row < SIZE; ++row) {
+        std::string line = "| ";
+        for (int col = 0; col < SIZE; ++col) {
+            bool highlighted = row == state.row && col == state.col;
+            line += styledDigit(board[row][col], fixedCells[row][col], highlighted, state.event, options);
+            line += ' ';
+
+            if ((col + 1) % 3 == 0) {
+                line += "| ";
+            }
+        }
+        lines.push_back(line);
+
+        if ((row + 1) % 3 == 0) {
+            lines.push_back("+-------+-------+-------+");
+        }
+    }
+
+    return lines;
+}
+
+std::vector<std::string> dashboardPanelLines(const Board& board,
+                                             const SolverStats& stats,
+                                             const RenderState& state,
+                                             const SolverOptions& options,
+                                             const std::vector<std::string>& eventLog,
+                                             int depth) {
+    std::vector<std::string> lines;
+    int filled = countFilledCells(board);
+
+    lines.push_back(colorize("ENGINE STATUS", Ansi::BOLD, options));
+    lines.push_back("event     : " + eventName(state.event));
+    lines.push_back("cell      : " + (state.row == -1 ? std::string("-")
+                                                       : "r" + std::to_string(state.row + 1) +
+                                                             " c" + std::to_string(state.col + 1)));
+    lines.push_back("filled    : " + std::to_string(filled) + "/81");
+    lines.push_back("depth     : " + std::to_string(depth));
+    lines.push_back("max depth : " + std::to_string(stats.maxDepth));
+    lines.push_back("");
+    lines.push_back(colorize("SEARCH", Ansi::BOLD, options));
+    lines.push_back("calls     : " + std::to_string(stats.recursiveCalls));
+    lines.push_back("backtracks: " + std::to_string(stats.backtracks));
+    lines.push_back("naked     : " + std::to_string(stats.nakedSingles));
+    lines.push_back("hidden    : " + std::to_string(stats.hiddenSingles));
+    lines.push_back("elim      : " + std::to_string(stats.candidateEliminations));
+    lines.push_back("");
+    lines.push_back(colorize("CONTROLS", Ansi::BOLD, options));
+    lines.push_back("mode      : " + std::string(options.stepMode ? "step" : "auto"));
+    lines.push_back("delay     : " + std::to_string(options.animationDelayMs) + " ms");
+    lines.push_back("MRV       : " + std::string(options.useMrv ? "on" : "off"));
+    lines.push_back("propagate : " + std::string(options.usePropagation ? "on" : "off"));
+    lines.push_back("");
+    lines.push_back(colorize("EVENT LOG", Ansi::BOLD, options));
+
+    for (const std::string& event : eventLog) {
+        lines.push_back(event);
+    }
+
+    return lines;
+}
+
+void trimEventLog(std::vector<std::string>& eventLog, std::size_t maxEvents) {
+    while (eventLog.size() > maxEvents) {
+        eventLog.erase(eventLog.begin());
+    }
+}
+
+void renderDashboard(const Board& board,
+                     const FixedCells& fixedCells,
+                     const SolverStats& stats,
+                     const RenderState& state,
+                     const SolverOptions& options,
+                     const std::vector<std::string>& eventLog,
+                     int depth) {
+    std::vector<std::string> left = boardLines(board, fixedCells, state, options);
+    std::vector<std::string> right = dashboardPanelLines(board, stats, state, options, eventLog, depth);
+    std::size_t rows = std::max(left.size(), right.size());
+
+    std::cout << colorize("Sudoku Solver Visual Dashboard\n", Ansi::BOLD, options);
+    std::cout << colorize("fixed=cyan  solved=green  guess=yellow  propagation=blue  rollback=red\n\n",
+                          Ansi::DIM, options);
+
+    for (std::size_t row = 0; row < rows; ++row) {
+        std::string leftText = row < left.size() ? left[row] : "";
+        std::string rightText = row < right.size() ? right[row] : "";
+        std::cout << padRight(leftText, 34) << rightText << '\n';
+    }
+}
+
 void renderSolverFrame(const Board& board,
                        const FixedCells& fixedCells,
                        const SolverStats& stats,
@@ -216,28 +374,50 @@ void renderSolverFrame(const Board& board,
         return;
     }
 
+    static std::vector<std::string> eventLog;
+    static bool hasActiveSession = false;
+
+    if (!hasActiveSession && stats.recursiveCalls <= 1 && depth == 0 && state.event != CellEvent::None) {
+        hasActiveSession = true;
+        eventLog.clear();
+        eventLog.push_back("visual session started");
+    }
+
+    if (!state.message.empty()) {
+        eventLog.push_back(state.message);
+        trimEventLog(eventLog, 8);
+    }
+
     if (options.clearBetweenFrames) {
         std::cout << Ansi::CLEAR;
     }
 
-    std::cout << colorize("Sudoku Solver Visual Mode\n", Ansi::BOLD, options);
-    renderBoard(board, fixedCells, state, options);
+    if (options.dashboardMode) {
+        renderDashboard(board, fixedCells, stats, state, options, eventLog, depth);
+    } else {
+        std::cout << colorize("Sudoku Solver Visual Mode\n", Ansi::BOLD, options);
+        renderBoard(board, fixedCells, state, options);
 
-    std::cout << "\nEvent: " << state.message << '\n';
-    std::cout << "Depth: " << depth
-              << " | Calls: " << stats.recursiveCalls
-              << " | Backtracks: " << stats.backtracks
-              << " | Naked: " << stats.nakedSingles
-              << " | Hidden: " << stats.hiddenSingles << "\n\n";
+        std::cout << "\nEvent: " << state.message << '\n';
+        std::cout << "Depth: " << depth
+                  << " | Calls: " << stats.recursiveCalls
+                  << " | Backtracks: " << stats.backtracks
+                  << " | Naked: " << stats.nakedSingles
+                  << " | Hidden: " << stats.hiddenSingles << "\n\n";
 
-    std::cout << colorize("Legend: fixed=cyan, solved=green, guess=yellow, propagation=blue, rollback=red\n",
-                          Ansi::DIM, options);
+        std::cout << colorize("Legend: fixed=cyan, solved=green, guess=yellow, propagation=blue, rollback=red\n",
+                              Ansi::DIM, options);
+    }
 
     if (options.stepMode) {
         std::cout << "Press Enter for next step...";
         std::cin.get();
     } else if (options.animationDelayMs > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(options.animationDelayMs));
+    }
+
+    if (state.event == CellEvent::Solution) {
+        hasActiveSession = false;
     }
 }
 
@@ -766,11 +946,14 @@ void runVisualSolve(const Board& puzzle, int delayMs = 35, bool stepMode = false
     SolverOptions visualOptions;
     visualOptions.usePropagation = false; // Shows recursive guessing clearly for learning mode.
     visualOptions.visualMode = true;
+    visualOptions.dashboardMode = true;
     visualOptions.stepMode = stepMode;
     visualOptions.animationDelayMs = delayMs;
     visualOptions.solutionLimit = 1;
 
+    std::cout << Ansi::HIDE_CURSOR;
     SolveReport report = solveSudoku(puzzle, visualOptions);
+    std::cout << Ansi::SHOW_CURSOR;
 
     std::cout << "\nVisual solve finished: " << statusName(report.status) << "\n";
     printStats(report.stats);
